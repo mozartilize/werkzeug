@@ -15,6 +15,7 @@ import sys
 import json
 import inspect
 import traceback
+from traceback import TracebackException
 import codecs
 from tokenize import TokenError
 
@@ -134,9 +135,15 @@ application.  The initial namespace was created by the debugger automatically.
 SUMMARY_HTML = u'''\
 <div class="%(classes)s">
   %(title)s
+  %(ext_frames)s
   <ul>%(frames)s</ul>
   %(description)s
 </div>
+'''
+
+EXT_FRAMES_HTML = u'''\
+<ul>%(frames)s</ul>
+<p>%(reason)s</p>
 '''
 
 FRAME_HTML = u'''\
@@ -159,7 +166,7 @@ SOURCE_LINE_HTML = u'''\
 def render_console_html(secret, evalex_trusted=True):
     return CONSOLE_HTML % {
         'evalex':           'true',
-        'evalex_trusted':   'true' if evalex_trusted else 'false',
+        'evalex_trusted':   evalex_trusted and 'true' or 'false',
         'console':          'true',
         'title':            'Console',
         'secret':           secret,
@@ -175,6 +182,7 @@ def get_current_traceback(ignore_system_exceptions=False,
     to the function as first parameter.
     """
     exc_type, exc_value, tb = sys.exc_info()
+    # import pdb; pdb.set_trace()
     if ignore_system_exceptions and exc_type in system_exceptions:
         raise
     for x in range_type(skip):
@@ -197,6 +205,7 @@ class Line(object):
         self.in_frame = False
         self.current = False
 
+    @property
     def classes(self):
         rv = ['line']
         if self.in_frame:
@@ -204,7 +213,6 @@ class Line(object):
         if self.current:
             rv.append('current')
         return rv
-    classes = property(classes)
 
     def render(self):
         return SOURCE_LINE_HTML % {
@@ -227,7 +235,22 @@ class Traceback(object):
         else:
             exception_type = exc_type
         self.exception_type = exception_type
+        self.te = TracebackException(exc_type, exc_value, tb)
 
+        def get_ext_frames(ext_expt, ext_expt_value):
+            ext_tb = ext_expt.exc_traceback
+            ext_exc_type = ext_expt.exc_type
+            self.ext_frames = []
+            while ext_tb:
+                self.ext_frames.append(Frame(ext_exc_type, ext_expt_value, ext_tb))
+                ext_tb = ext_tb.tb_next
+
+        if self.te.__cause__ is not None:
+            get_ext_frames(self.te.__cause__, exc_value.__cause__)
+        elif self.te.__context__ is not None and \
+                not self.te.__suppress_context__:
+            get_ext_frames(self.te.__context__, exc_value.__context__)
+            
         # we only add frames to the list that are not hidden.  This follows
         # the the magic variables as defined by paste.exceptions.collector
         self.frames = []
@@ -270,17 +293,17 @@ class Traceback(object):
         elif self.frames[-1] in new_frames:
             self.frames[:] = new_frames
 
+    @property
     def is_syntax_error(self):
         """Is it a syntax error?"""
         return isinstance(self.exc_value, SyntaxError)
-    is_syntax_error = property(is_syntax_error)
 
+    @property
     def exception(self):
         """String representation of the exception."""
         buf = traceback.format_exception_only(self.exc_type, self.exc_value)
         rv = ''.join(buf).strip()
         return rv.decode('utf-8', 'replace') if PY2 else rv
-    exception = property(exception)
 
     def log(self, logfile=None):
         """Log the ASCII traceback into a file object."""
@@ -318,6 +341,7 @@ class Traceback(object):
         """Render the traceback for the interactive console."""
         title = ''
         frames = []
+        ext_frames_html = ''
         classes = ['traceback']
         if not self.frames:
             classes.append('noframe-traceback')
@@ -327,6 +351,19 @@ class Traceback(object):
                 title = u'Syntax Error'
             else:
                 title = u'Traceback <em>(most recent call last)</em>:'
+
+        if hasattr(self, 'ext_frames'):
+            ext_frames = []
+            for frame in self.ext_frames:
+                ext_frames.append(u'<li%s>%s' % (
+                    frame.info and u' title="%s"' % escape(frame.info) or u'',
+                    frame.render()
+                ))
+            reason = traceback._cause_message if self.te.__cause__ is not None else traceback._context_message
+            ext_frames_html = EXT_FRAMES_HTML % {
+                'frames': u'\n'.join(ext_frames),
+                'reason': reason
+            }
 
         for frame in self.frames:
             frames.append(u'<li%s>%s' % (
@@ -342,6 +379,7 @@ class Traceback(object):
         return SUMMARY_HTML % {
             'classes':      u' '.join(classes),
             'title':        title and u'<h3>%s</h3>' % title or u'',
+            'ext_frames':   ext_frames_html,
             'frames':       u'\n'.join(frames),
             'description':  description_wrapper % escape(self.exception)
         }
@@ -377,7 +415,7 @@ class Traceback(object):
         yield self.exception
 
     def plaintext(self):
-        return u'\n'.join(self.generate_plaintext_traceback())
+        return u''.join(self.te.format())
     plaintext = cached_property(plaintext)
 
     id = property(lambda x: id(x))
