@@ -402,21 +402,9 @@ class Traceback(object):
             'secret':           secret
         }
 
-    def generate_plaintext_traceback(self):
-        """Like the plaintext attribute but returns a generator"""
-        yield u'Traceback (most recent call last):'
-        for frame in self.frames:
-            yield u'  File "%s", line %s, in %s' % (
-                frame.filename,
-                frame.lineno,
-                frame.function_name
-            )
-            yield u'    ' + frame.current_line.strip()
-        yield self.exception
-
+    @property
     def plaintext(self):
         return u''.join(self.te.format())
-    plaintext = cached_property(plaintext)
 
     id = property(lambda x: id(x))
 
